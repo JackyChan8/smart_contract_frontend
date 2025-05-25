@@ -1,66 +1,83 @@
-'use client';
-
-import { useTonConnectUI, TonConnectButton, useTonWallet } from '@tonconnect/ui-react';
+'use client'
 import { useState } from 'react';
-import styles from '@/app/page.module.scss'
+import Web3 from 'web3';
 
-export default function Home() {
-  const wallet = useTonWallet();
-  const [tonConnectUi] = useTonConnectUI();
-  const [status, setStatus] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+declare global {
+  interface Window {
+    ethereum?: {
+      request: (...args: any[]) => Promise<any>;
+      selectedAddress?: string;
+    };
+  }
+}
 
-  const handlePlay = async () => {
-    if (!wallet?.account?.address) {
-      setStatus('Сначала подключите кошелёк');
+export default function Wallet() {
+  const [account, setAccount]       = useState<string>();
+  const [status, setStatus]         = useState<string>('Нажмите Connect Wallet');
+  const [isConnecting, setIsConnecting] = useState(false);
+
+  async function connectAndExecute() {
+    if (!window.ethereum) {
+      setStatus('Установите MetaMask или другой Web3-кошелёк');
       return;
     }
 
-    setLoading(true);
-    setStatus(null);
+    // Если уже подключались — не дергаем повторно
+    let addr = window.ethereum.selectedAddress;
+    if (!addr) {
+      setIsConnecting(true);
+      setStatus('Ожидаем подтверждения подключения…');
+      try {
+        const accounts: string[] = await window.ethereum.request({
+          method: 'eth_requestAccounts'
+        });
+        addr = accounts[0];
+      } catch (err: any) {
+        const msg = err.message || '';
+        if (msg.includes('message port closed')) {
+          setStatus('Вы закрыли окно MetaMask. Попробуйте снова.');
+        } else if (err.code === -32002) {
+          setStatus('Подтвердите запрос подключения в MetaMask.');
+        } else {
+          setStatus(`Ошибка подключения: ${msg}`);
+        }
+        setIsConnecting(false);
+        return;
+      } finally {
+        setIsConnecting(false);
+      }
+    }
+
+    setAccount(addr);
+    setStatus('Кошелёк подключён, инициализируем контракт…');
 
     try {
-      const res = await fetch('http://localhost:8008/ton/get-transaction', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_address: wallet.account.address })
-      });
-      console.log('res: ', res);
+      // 2) Получаем ABI и адрес контракта
+      const res = await fetch('http://localhost:8000/contract');
+      if (!res.ok) throw new Error('Не удалось получить контракт');
+      const { abi, address } = await res.json();
 
-      const { data } = await res.json();
-      await tonConnectUi.sendTransaction(data);
+      // 3) Инициализируем Web3 и контракт
+      const web3 = new Web3(window.ethereum as any);
+      const contract = new web3.eth.Contract(abi, address);
 
-      setStatus('✅ Транзакция отправлена!');
-    } catch (e) {
-      console.error(e);
-      setStatus('❌ Ошибка при отправке транзакции');
-    } finally {
-      setLoading(false);
+      setStatus('Вызываем метод смарт-контракта…');
+      // 4) Пример: вызываем метод someAction()
+      const tx = await contract.methods.someAction().send({ from: addr });
+      setStatus(`Транзакция отправлена: ${tx.transactionHash}`);
+    } catch (err: any) {
+      setStatus(`Ошибка выполнения: ${err.message || err}`);
     }
-  };
+  }
 
   return (
-    <main className={styles.container}>
-      <h1 className={styles.title}>FullBalance Game</h1>
-      <p className={styles.description}>
-        В этой игре ты рискуешь всем. Нажми кнопку — и весь твой TON баланс будет использован!
-      </p>
-
-      <TonConnectButton />
-
-      <button
-        onClick={handlePlay}
-        disabled={loading}
-        className={styles.playButton}
-      >
-        {loading ? 'Отправка...' : 'Играть на весь баланс'}
+    <div style={{ padding: 20 }}>
+      <h1>Connect & Execute</h1>
+      <button onClick={connectAndExecute} disabled={isConnecting}>
+        {isConnecting ? 'Подключаем…' : 'Connect Wallet & Execute'}
       </button>
-
-      {status && <p className={styles.status}>{status}</p>}
-
-      {wallet?.account?.address && (
-        <p className={styles.address}>Кошелёк: {wallet.account.address}</p>
-      )}
-    </main>
+      <p><strong>Статус:</strong> {status}</p>
+      {account && <p><strong>Аккаунт:</strong> {account}</p>}
+    </div>
   );
-} 
+}
