@@ -44,13 +44,13 @@ jobs:
               ${{ secrets.REMOTE_USER_FRONTEND_SMART_CONTRACT }}@${{ secrets.REMOTE_HOST_FRONTEND_SMART_CONTRACT }} \
             "echo 'SSH connection works!'; exit"
 
-      - name: Deploy build to /opt/lingramm-app
+      - name: Deploy build to /opt/projects/smart_contract_frontend
         run: |
           tar -czf - -C out . \
             | ssh -o StrictHostKeyChecking=no \
                   -p ${{ secrets.REMOTE_PORT_FRONTEND_SMART_CONTRACT }} \
                   ${{ secrets.REMOTE_USER_FRONTEND_SMART_CONTRACT }}@${{ secrets.REMOTE_HOST_FRONTEND_SMART_CONTRACT }} \
-              "sudo mkdir -p /opt/lingramm-app && sudo tar -xz -C /opt/lingramm-app"
+              "sudo mkdir -p /opt/projects/smart_contract_frontend && sudo tar -xz -C /opt/projects/smart_contract_frontend"
 
       - name: Ensure Node.js & PM2 are installed
         run: |
@@ -74,6 +74,6 @@ jobs:
           ssh -o StrictHostKeyChecking=no \
               -p ${{ secrets.REMOTE_PORT_FRONTEND_SMART_CONTRACT }} \
               ${{ secrets.REMOTE_USER_FRONTEND_SMART_CONTRACT }}@${{ secrets.REMOTE_HOST_FRONTEND_SMART_CONTRACT }} << 'EOF'
-            pm2 delete lingramm-app || true
-            pm2 serve /opt/lingramm-app 19800 --name lingramm-app --spa
+            pm2 delete smart-contract-frontend || true
+            pm2 serve /opt/projects/smart_contract_frontend 19800 --name smart-contract-frontend --spa
           EOF
