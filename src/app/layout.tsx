@@ -1,7 +1,6 @@
 import "./globals.scss";
 
 import type { Metadata } from "next";
-import { TonConnectUIProvider } from "@tonconnect/ui-react";
 import TonConnectWrapper from "@/components/Transactions/TonConnectWrapper";
 
 export const metadata: Metadata = {
