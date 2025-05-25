@@ -1,0 +1,79 @@
+name: Deploy Next.js Static to Remote
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build static export
+        run: npm run build
+
+      - name: Save SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_KEY_FRONTEND_SMART_CONTRACT }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Start ssh-agent & add key
+        run: |
+          eval "$(ssh-agent -s)"
+          ssh-add ~/.ssh/id_rsa
+
+      - name: Add remote host to known_hosts
+        run: |
+          ssh-keyscan -p ${{ secrets.REMOTE_PORT_FRONTEND_SMART_CONTRACT }} ${{ secrets.REMOTE_HOST_FRONTEND_SMART_CONTRACT }} >> ~/.ssh/known_hosts
+
+      - name: Test SSH connection
+        run: |
+          ssh -v -i ~/.ssh/id_rsa -p ${{ secrets.REMOTE_PORT_FRONTEND_SMART_CONTRACT }} \
+              ${{ secrets.REMOTE_USER_FRONTEND_SMART_CONTRACT }}@${{ secrets.REMOTE_HOST_FRONTEND_SMART_CONTRACT }} \
+            "echo 'SSH connection works!'; exit"
+
+      - name: Deploy build to /opt/lingramm-app
+        run: |
+          tar -czf - -C out . \
+            | ssh -o StrictHostKeyChecking=no \
+                  -p ${{ secrets.REMOTE_PORT_FRONTEND_SMART_CONTRACT }} \
+                  ${{ secrets.REMOTE_USER_FRONTEND_SMART_CONTRACT }}@${{ secrets.REMOTE_HOST_FRONTEND_SMART_CONTRACT }} \
+              "sudo mkdir -p /opt/lingramm-app && sudo tar -xz -C /opt/lingramm-app"
+
+      - name: Ensure Node.js & PM2 are installed
+        run: |
+          ssh -o StrictHostKeyChecking=no \
+              -p ${{ secrets.REMOTE_PORT_FRONTEND_SMART_CONTRACT }} \
+              ${{ secrets.REMOTE_USER_FRONTEND_SMART_CONTRACT }}@${{ secrets.REMOTE_HOST_FRONTEND_SMART_CONTRACT }} << 'EOF'
+            # Устанавливаем Node.js (версии 20.x)
+            if ! command -v node >/dev/null; then
+              curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+              sudo apt-get install -y nodejs
+            fi
+
+            # Устанавливаем PM2, если ещё нет
+            if ! command -v pm2 >/dev/null; then
+              sudo npm install -g pm2
+            fi
+          EOF
+
+      - name: Serve static site via PM2
+        run: |
+          ssh -o StrictHostKeyChecking=no \
+              -p ${{ secrets.REMOTE_PORT_FRONTEND_SMART_CONTRACT }} \
+              ${{ secrets.REMOTE_USER_FRONTEND_SMART_CONTRACT }}@${{ secrets.REMOTE_HOST_FRONTEND_SMART_CONTRACT }} << 'EOF'
+            pm2 delete lingramm-app || true
+            pm2 serve /opt/lingramm-app 19800 --name lingramm-app --spa
+          EOF
