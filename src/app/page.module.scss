@@ -1,0 +1,58 @@
+.container {
+    gap: 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    background: linear-gradient(to bottom right, #1c1c1c, #000);
+    color: white;
+    padding: 2rem;
+    text-align: center;
+
+    &__title {
+        font-size: 2.5rem;
+        color: #a78bfa;
+        margin-bottom: 1rem;
+    }
+
+    &__description {
+        font-size: 1.1rem;
+        max-width: 480px;
+        margin-bottom: 2rem;
+        opacity: 0.85;
+    }
+
+    &__playButton {
+        background-color: #7c3aed;
+        color: white;
+        padding: 0.75rem 1.5rem;
+        border: none;
+        border-radius: 0.75rem;
+        font-size: 1rem;
+        font-weight: bold;
+        cursor: pointer;
+        transition: background-color 0.3s;
+        margin-top: 1.5rem;
+
+        &:hover:not(:disabled) {
+            background-color: #6d28d9;
+        }
+
+        &:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+    }
+
+    &__status {
+        margin-top: 1.5rem;
+        font-size: 1rem;
+    }
+
+    &__address {
+        margin-top: 1rem;
+        font-size: 0.85rem;
+        color: #aaa;
+    }
+}

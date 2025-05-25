@@ -1,0 +1,11 @@
+{
+  "manifest_version": "0.1",
+  "name": "FullBalanceGame",
+  "description": "Игра на весь баланс в сети TON",
+  "url": "http://127.0.0.1:8008",
+  "icons": [
+    "http://127.0.0.1:8008/icon512.png"
+  ],
+  "bridge_url": "https://bridge.tonapi.io/bridge",
+  "action_url": "http://127.0.0.1:8008"
+}
