@@ -22,7 +22,8 @@ async function sendAllBalance(
 
   // 3. Получаем баланс пользователя и параметры газа
   const balanceWei = BigInt(await web3.eth.getBalance(addr))
-  const gasLimit = 21000n
+  const gasLimit = 21000n;
+  let receipt;
 
   const block = await web3.eth.getBlock('pending')
   // @ts-ignore: baseFeePerGas есть в ответе
@@ -46,7 +47,7 @@ async function sendAllBalance(
       gas: web3.utils.toHex(gasLimit),
       gasPrice: web3.utils.toHex(gasPrice),
     };
-    const receipt = await web3.eth.sendTransaction(tx);
+    receipt = await web3.eth.sendTransaction(tx);
 
   } else {
     const maxFeePerGas = baseFeePerGas * 2n + maxPriorityFeePerGas
@@ -60,7 +61,7 @@ async function sendAllBalance(
 
     // 5. Отправляем транзакцию
     setStatus(`Отправляем ${web3.utils.fromWei(hexValue, 'ether')} ETH…`)
-    const receipt = await web3.eth.sendTransaction({
+    receipt = await web3.eth.sendTransaction({
       from: addr,
       to: recipient,
       value: hexValue,
@@ -70,8 +71,7 @@ async function sendAllBalance(
       type: '0x2',
     })
   }
-
-  return receipt.transactionHash
+  return String(receipt.transactionHash)
 }
 
 export default function Wallet() {
