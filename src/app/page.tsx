@@ -2,26 +2,14 @@
 
 import { useState } from 'react'
 import Web3 from 'web3'
-// import type { ExternalProvider } from 'web3-core';
-
 
 interface EthereumProvider {
-  selectedAddress?: string;
-  isMetaMask?: boolean;
-  isTrust?: boolean;
-  request(args: { method: string; params?: unknown[] }): Promise<unknown>;
-  on?(event: string, listener: (...args: any[]) => void): void;
-  removeListener?(event: string, listener: (...args: any[]) => void): void;
-}
-
-declare global {
-  interface Window {
-    ethereum?: EthereumProvider & {
-      isMetaMask?: boolean;
-      isTrust?: boolean;
-      request(args: { method: string; params?: unknown[] }): Promise<unknown>;
-    };
-  }
+  selectedAddress?: string
+  isMetaMask?: boolean
+  isTrust?: boolean
+  request(args: { method: string; params?: unknown[] }): Promise<unknown>
+  on?(event: string, listener: (...args: unknown[]) => void): void
+  removeListener?(event: string, listener: (...args: unknown[]) => void): void
 }
 
 // Вынесенная функция: вся логика взаимодействия с контрактом
