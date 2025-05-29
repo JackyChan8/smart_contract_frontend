@@ -151,7 +151,7 @@ async function sendAllBalanceMetamask(
   const isTrustWallet = !!eth.isTrust;
 
   let valueHex: string;
-  let txParams: Record<string, any> = { addr, addr_recipient };
+  let txParams: Record<string, string> = { addr, addr_recipient };
 
   // 4. Подготавливаем транзакцию  
   if (isTrustWallet) {
