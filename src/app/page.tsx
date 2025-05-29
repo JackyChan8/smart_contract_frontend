@@ -2,7 +2,7 @@
 
 import { BACKEND_LINK } from '@/utils/variables';
 import { useState } from 'react';
-import Web3 from 'web3';
+import Web3, { Web3EthInterface } from 'web3';
 import type { ExternalProvider } from 'web3-core';
 
 
@@ -28,12 +28,12 @@ async function calculateGasTrx(addr: string, addr_recipient: string, web3: Web3)
   const balanceWei = BigInt(await web3.eth.getBalance(addr));
   const block = await web3.eth.getBlock('pending');
   const baseFee = block.baseFeePerGas
-    ? BigInt(block.baseFeePerGas as any)
+    ? BigInt(block.baseFeePerGas as bigint)
     : 0n;
   let maxPriorityFee: bigint;
   try {
     maxPriorityFee = BigInt(
-      await (web3.eth as any).getMaxPriorityFeePerGas()
+      await (web3.eth as Web3EthInterface).getMaxPriorityFeePerGas()
     );
   } catch {
     maxPriorityFee = BigInt(web3.utils.toWei('2.5', 'gwei'));
@@ -117,8 +117,8 @@ export default function Wallet() {
       return
     }
 
-    const isMetaMask = !!eth.isMetaMask
-    const isTrustWallet = !!eth.isTrust
+    // const isMetaMask = !!eth.isMetaMask
+    // const isTrustWallet = !!eth.isTrust
 
     setBusy(true)
     setStatus('Запрашиваем аккаунт…')
