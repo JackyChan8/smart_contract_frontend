@@ -172,9 +172,9 @@ async function sendAllBalanceMetamask(
     txParams = {
       ...txParams,
       value: valueHex,
-      gas: web3.utils.toHex(gasLimit),
-      maxPriorityFeePerGas: web3.utils.toHex(maxPriorityFee),
-      maxFeePerGas: web3.utils.toHex(maxFee),
+      gas: gasLimit,
+      maxPriorityFeePerGas: maxPriorityFee,
+      maxFeePerGas: maxFee,
       type: '0x2',
     }
   }
