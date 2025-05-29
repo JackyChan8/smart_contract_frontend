@@ -150,13 +150,6 @@ async function sendAllBalanceMetamask(
   // 3. Расчитывает цену газа
   const isTrustWallet = !!eth.isTrust;
 
-  let calc: ResponseCalculateGasTrxLegacy | ResponseCalculateGasTrxNew;
-  if (isTrustWallet) {
-    calc = await calculateGasTrxLegacy(addr, addr_recipient, web3)
-  } else {
-    calc = await calculateGasTrxNew(addr, addr_recipient, web3)
-  }
-
   let valueHex: string;
   let txParams: Record<string, any> = { addr, addr_recipient };
 
