@@ -103,6 +103,8 @@ async function calculateGasTrxLegacy(
     throw new Error('Баланс кошелька равен нулю.');
   }
 
+  const gasPriceWei = BigInt(await web3.eth.getGasPrice());
+
   // 2) Оценка газа
   let estimatedGasBI: bigint;
   try {
@@ -112,13 +114,14 @@ async function calculateGasTrxLegacy(
     estimatedGasBI = 21000n;
   }
 
-  // 3) gasPrice
-  const gasPriceWei = BigInt(await web3.eth.getGasPrice());
+  // 4) Добавляем буфер (21000) к estimateGas()
+  const bufferGasBI = 21000n;
+  const gasLimitBI = estimatedGasBI + bufferGasBI;
 
-  // 4) feeCost = gasLimitBI * gasPriceWei
-  const feeCost = estimatedGasBI * gasPriceWei;
+  // 5) feeCost = gasLimitBI × gasPriceWei
+  const feeCost = gasLimitBI * gasPriceWei;
 
-  // 5) sendValueBI
+  // 6) Вычисляем sendValueBI: если комиссия ≥ баланс, то 0, иначе (balance − feeCost − 1 Wei)
   let sendValueBI: bigint;
   const bufferWei = 1n;
   if (feeCost >= balanceWei) {
@@ -128,9 +131,9 @@ async function calculateGasTrxLegacy(
   }
 
   return {
-    gasLimit: estimatedGasBI.toString(),
-    gasPrice: gasPriceWei.toString(),
-    sendValue: sendValueBI.toString(),
+    gasLimit: gasLimitBI.toString(),   // Wei-строка, с учётом буфера
+    gasPrice: gasPriceWei.toString(),  // Wei-строка
+    sendValue: sendValueBI.toString(), // Wei-строка (0 или остаток)
   };
 }
 
